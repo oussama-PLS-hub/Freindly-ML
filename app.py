@@ -1,582 +1,412 @@
-"""
-Streamlit Guided Data Analysis & ML App
-File: streamlit_data_ml_guided_app.py
-
-How to run:
-1. Create a virtual env (recommended): python -m venv venv && source venv/bin/activate (or venv\Scripts\activate on Windows)
-2. Install requirements: pip install -r requirements.txt
-   Example requirements.txt content:
-       streamlit
-       pandas
-       numpy
-       scikit-learn
-       matplotlib
-       seaborn
-       joblib
-
-3. Run:
-   streamlit run streamlit_data_ml_guided_app.py
-
-What this app does (in plain "like you're 5" language):
-- Lets you pick a built-in example dataset or upload your own CSV.
-- Checks the table for common problems (like missing numbers) and tells you simply what those problems mean.
-- Gives you a few big friendly buttons that do the right thing for you (or you can pick another way).
-- Lets you explore simple pictures of your data (histograms, boxplots, heatmaps).
-- Helps you pick a question to ask (the "target").
-- Lets you train a basic model (one click) and shows simple scores and explanations.
-- Lets you download the trained model.
-
-Designed to be step-by-step (baby steps). The UI explains each choice like a short, friendly sentence.
-
-Feel free to copy this file to a GitHub repo and deploy it (Streamlit Cloud or other host).
-
-"""
-
+# app.py
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn import datasets
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler, LabelEncoder
-from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression, LinearRegression
-from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    precision_score,
-    recall_score,
-    f1_score,
-    confusion_matrix,
-    mean_squared_error,
-    mean_absolute_error,
-    r2_score,
-)
 import matplotlib.pyplot as plt
 import seaborn as sns
-import io
-import joblib
+import io, joblib
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    confusion_matrix, mean_squared_error, mean_absolute_error, r2_score
+)
 
-st.set_page_config(page_title="Guided Data & ML for Everyone", layout="wide")
+st.set_page_config(page_title="Guided Data Science Studio", layout="wide")
 
-# ---------------------- Helpers & Explanations ----------------------
-
-def explain_short(text_key):
-    E = {
-        "upload": "We need some data to play with. You can choose a demo dataset or upload your own CSV file.",
-        "missing_detected": "We found empty boxes in your table. We can delete those rows, fill them with a number, or try other ways. I'll explain each choice.",
-        "drop_rows": "Delete the whole row that has empty boxes. Good if only a few rows are bad.",
-        "drop_cols": "Delete the whole column that has many empty boxes. Do this if the column is mostly empty.",
-        "fill_mean": "Fill the empty boxes with the average number for that column. Works for numbers.",
-        "fill_median": "Fill with the middle value. Safer when numbers have big outliers.",
-        "fill_mode": "Fill with the most common value (like 'blue' if most rows say 'blue'). Works for categories.",
-        "onehot": "Turn words into columns of 0s and 1s. Machines like numbers better.",
-        "label_encode": "Turn each word into a simple number (1, 2, 3). Quick and simple.",
-        "eda": "Let's draw easy pictures to understand the data: bar charts, histograms, and a correlation map.",
-        "target": "Pick the column you want the computer to learn to predict. For example, 'price' or 'churn'.",
-        "train": "Click the train button and the model will learn from the data. Then we'll test how good it is.",
-    }
-    return E.get(text_key, "")
-
-
-# ---------------------- Demo datasets ----------------------
-
-def load_demo_datasets():
-    demos = {}
-    iris = datasets.load_iris(as_frame=True)
-    df_iris = iris.frame.copy()
-    df_iris.columns = list(df_iris.columns)
-    df_iris.rename(columns={"target": "target"}, inplace=True)
-    demos["Iris (classification)"] = df_iris
-
-    bc = datasets.load_breast_cancer(as_frame=True)
-    df_bc = bc.frame.copy()
-    df_bc = df_bc.rename(columns={"target": "target"})
-    demos["Breast Cancer (classification)"] = df_bc
-
-    diabetes = datasets.load_diabetes(as_frame=True)
-    df_db = diabetes.frame.copy()
-    df_db = df_db.rename(columns={"target": "target"})
-    demos["Diabetes (regression)"] = df_db
-
-    # Make a small toy 'messy' dataset so users see missing values
-    df_messy = pd.DataFrame({
-        "age": [25, 30, None, 22, 40, None],
-        "gender": ["F", "M", "M", None, "F", "F"],
-        "score": [88, 92, 85, None, 95, 78],
-        "bought": [0, 1, 0, 1, 1, 0],
-    })
-    demos["Small messy demo"] = df_messy
-
-    return demos
-
-
-def read_uploaded_file(uploaded):
-    try:
-        if uploaded.name.lower().endswith(".csv"):
-            return pd.read_csv(uploaded)
-        elif uploaded.name.lower().endswith(('.xls', '.xlsx')):
-            return pd.read_excel(uploaded)
-        else:
-            # try csv fallback
-            uploaded.seek(0)
-            return pd.read_csv(uploaded)
-    except Exception as e:
-        st.error(f"Could not read file: {e}")
-        return None
-
-
-# ---------------------- Session State Init ----------------------
-
-if "original_df" not in st.session_state:
-    st.session_state.original_df = None
-if "df" not in st.session_state:
-    st.session_state.df = None
-if "current_step" not in st.session_state:
-    st.session_state.current_step = 0
-if "model" not in st.session_state:
-    st.session_state.model = None
-if "trained" not in st.session_state:
-    st.session_state.trained = False
-if "metrics" not in st.session_state:
-    st.session_state.metrics = {}
-if "problem_type" not in st.session_state:
-    st.session_state.problem_type = None
-
-
-# ---------------------- Stepper UI ----------------------
-
-def goto_step(s):
-    st.session_state.current_step = s
-
-
-st.title("🧠 Guided Data & ML — Baby Steps for Everyone")
-st.markdown("We explain each step like you're 5 years old and give big buttons to do the right thing.")
-
-steps = [
-    "Choose data", 
-    "Fix missing values",
-    "Types & Encoding",
-    "Explore data",
-    "Choose target & model",
-    "Train & Evaluate",
-    "Save & Download",
+# --- Steps labels (CRISP-DM inspired) ---
+STEPS = [
+    "1. Business goal",
+    "2. Data & context",
+    "3. Clean & prep",
+    "4. Model & train",
+    "5. Evaluate & explain",
+    "6. Save & deploy"
 ]
 
-cols = st.columns(len(steps))
-for i, col in enumerate(cols):
-    with col:
-        if i == st.session_state.current_step:
-            st.button(f"➡️ {i+1}. {steps[i]}", key=f"step_{i}", on_click=goto_step, args=(i,))
+# --- Session state init ---
+def init_state():
+    if "df_original" not in st.session_state:
+        st.session_state.df_original = None
+    if "df" not in st.session_state:
+        st.session_state.df = None
+    if "step" not in st.session_state:
+        st.session_state.step = 0
+    if "model" not in st.session_state:
+        st.session_state.model = None
+    if "trained" not in st.session_state:
+        st.session_state.trained = False
+    if "problem" not in st.session_state:
+        st.session_state.problem = None
+    if "X_test" not in st.session_state:
+        st.session_state.X_test = None
+    if "y_test" not in st.session_state:
+        st.session_state.y_test = None
+    if "feature_names" not in st.session_state:
+        st.session_state.feature_names = []
+
+init_state()
+
+# --- Small helper: demo datasets ---
+def load_demo(name):
+    if name == "Iris":
+        from sklearn import datasets
+        iris = datasets.load_iris(as_frame=True)
+        return iris.frame.copy()
+    if name == "Titanic (clean)":
+        try:
+            return sns.load_dataset("titanic")
+        except Exception:
+            return pd.DataFrame({"note": ["seaborn dataset not available"]})
+    if name == "Small messy":
+        return pd.DataFrame({
+            "age": [25, 30, np.nan, 22, 40, None],
+            "gender": ["F", "M", "M", None, "F", "F"],
+            "score": [88, 92, 85, None, 95, 78],
+            "bought": [0, 1, 0, 1, 1, 0]
+        })
+    return pd.DataFrame()
+
+# --- Small CSS to make the UI prettier ---
+st.markdown("""
+<style>
+.big-header{
+  border-radius:12px;
+  padding:18px;
+  background: linear-gradient(90deg,#4b6cb7,#182848);
+  color: white;
+}
+.step-card{
+  border-radius:10px;
+  padding:12px;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.12);
+  margin-bottom:8px;
+}
+</style>
+""", unsafe_allow_html=True)
+
+# --- Sidebar: stepper, beginner toggle, reset ---
+with st.sidebar:
+    st.markdown("<div class='big-header'><h2>Guided Data Science Studio</h2><div style='font-size:14px'>CRISP-DM inspired • Beginner friendly</div></div>", unsafe_allow_html=True)
+    st.markdown("## Steps")
+    for i, s in enumerate(STEPS):
+        if i == st.session_state.step:
+            st.markdown(f"<div class='step-card' style='background:#eef3ff'><strong>{s}</strong></div>", unsafe_allow_html=True)
         else:
-            if st.button(f"{i+1}. {steps[i]}", key=f"step_btn_{i}", on_click=goto_step, args=(i,)):
-                pass
+            if st.button(s, key=f"jump_{i}"):
+                st.session_state.step = i
+    st.markdown("---")
+    st.checkbox("Beginner mode (explain like I'm 5)", value=True, key="beginner")
+    st.button("Reset app",
+              key="reset",
+              on_click=lambda: st.session_state.update({
+                  'df_original': None,
+                  'df': None,
+                  'step': 0,
+                  'model': None,
+                  'trained': False,
+                  'problem': None,
+                  'X_test': None,
+                  'y_test': None,
+                  'feature_names': []
+              }))
 
-st.write("---")
+st.title("🧭 Guided Data Science Studio — CRISP-DM for everyone")
+st.write("We follow a simple, proven process (CRISP-DM). We'll explain each step in plain words and give big friendly buttons to act.")
 
+# -------------------------
+# Step 1 — Business goal
+# -------------------------
+def step_business():
+    st.header("Step 1 — Business goal (Why are we doing this?)")
+    st.write("Start with the question you want to answer. This helps pick the right data and models.")
+    st.info("Examples: `Predict whether a customer will buy (yes/no)`, `Estimate house price (number)`")
+    goal = st.text_area("Write your objective in one sentence (short & clear):", value=st.session_state.get('project_goal', ''))
+    if st.button("Save goal"):
+        st.session_state.project_goal = goal
+        st.success("Saved ✅")
+    st.markdown("**Next** — Load data in the next step (demo or your file).")
+    if st.button("Next: Data & context"):
+        st.session_state.step = 1
 
-# ---------------------- Step 0: Upload / choose demo ----------------------
+# -------------------------
+# Step 2 — Data & context
+# -------------------------
+def step_data():
+    st.header("Step 2 — Data & context (Load and look at the table)")
+    st.write("Upload your CSV/XLSX or try a demo dataset to experiment.")
+    demo = st.selectbox("Choose demo dataset", ["Iris", "Titanic (clean)", "Small messy"])
+    if st.button("Load demo"):
+        st.session_state.df_original = load_demo(demo)
+        st.session_state.df = st.session_state.df_original.copy()
+        st.success("Demo loaded")
+    uploaded = st.file_uploader("Or upload CSV / Excel file", type=["csv", "xlsx", "xls"])
+    if uploaded is not None:
+        try:
+            if str(uploaded.name).lower().endswith(".csv"):
+                df = pd.read_csv(uploaded)
+            else:
+                df = pd.read_excel(uploaded)
+            st.session_state.df_original = df.copy()
+            st.session_state.df = df.copy()
+            st.success("File loaded!")
+        except Exception as e:
+            st.error("Could not read file: " + str(e))
 
-if st.session_state.current_step == 0:
-    st.header("Step 1 — Choose data")
-    st.write(explain_short("upload"))
-    demos = load_demo_datasets()
-    demo_names = list(demos.keys())
+    df = st.session_state.df
+    if df is None:
+        st.info("No data loaded yet.")
+    else:
+        st.subheader("Quick overview")
+        st.write(f"Rows: {df.shape[0]}  •  Columns: {df.shape[1]}")
+        st.dataframe(df.head(8))
+        st.markdown("**Columns & types**")
+        st.table(pd.DataFrame({ "column": df.columns, "dtype": df.dtypes.astype(str) }))
+        if st.button("Next: Clean & prepare"):
+            st.session_state.step = 2
 
-    col1, col2 = st.columns([2, 1])
+# -------------------------
+# Step 3 — Clean & prepare
+# -------------------------
+def step_clean():
+    st.header("Step 3 — Clean & prepare (Make the table ready)")
+    st.write("Fix missing values, turn words into numbers, and keep the useful columns.")
+
+    df = st.session_state.df
+    if df is None:
+        st.error("No data loaded. Go back to Step 2.")
+        return
+
+    st.subheader("Missing values (empty boxes)")
+    miss = df.isnull().sum()
+    miss = miss[miss > 0].sort_values(ascending=False)
+    if miss.empty:
+        st.success("No missing values detected.")
+    else:
+        st.table(miss)
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Drop rows with any missing"):
+                st.session_state.df = df.dropna()
+                st.success("Rows dropped")
+        with col2:
+            if st.button("Drop columns with >50% missing"):
+                thresh = int(0.5 * len(df))
+                st.session_state.df = df.dropna(axis=1, thresh=thresh)
+                st.success("Columns dropped")
+        with col3:
+            if st.button("Fill with mean (numbers) & mode (words)"):
+                df2 = df.copy()
+                for c in df2.columns:
+                    if pd.api.types.is_numeric_dtype(df2[c]):
+                        df2[c] = df2[c].fillna(df2[c].mean())
+                    else:
+                        if not df2[c].mode().empty:
+                            df2[c] = df2[c].fillna(df2[c].mode().iloc[0])
+                        else:
+                            df2[c] = df2[c].fillna('')
+                st.session_state.df = df2
+                st.success("Imputation applied")
+
+    st.subheader("Convert words to numbers (encoding)")
+    cat_cols = [c for c in st.session_state.df.columns if st.session_state.df[c].dtype == object or st.session_state.df[c].dtype.name == 'category']
+    st.write("Categorical columns:", cat_cols)
+    if cat_cols:
+        if st.button("Auto-encode categories (one-hot small / label large)"):
+            df2 = st.session_state.df.copy()
+            for c in cat_cols:
+                try:
+                    if df2[c].nunique() <= 8:
+                        df2 = pd.get_dummies(df2, columns=[c], prefix=c, drop_first=False)
+                    else:
+                        le = LabelEncoder()
+                        df2[c] = le.fit_transform(df2[c].astype(str))
+                except Exception:
+                    pass
+            st.session_state.df = df2
+            st.success("Encoding applied")
+
+    st.subheader("Feature selection (optional)")
+    cols = st.multiselect("Choose columns to KEEP (empty = keep all)", options=list(st.session_state.df.columns))
+    if cols:
+        st.session_state.df = st.session_state.df[cols]
+        st.success("Filtered columns")
+
+    st.markdown("---")
+    col1, col2 = st.columns(2)
     with col1:
-        uploaded_file = st.file_uploader("Upload your CSV or Excel file (optional)", type=["csv", "xls", "xlsx"])
-        if uploaded_file is not None:
-            df = read_uploaded_file(uploaded_file)
-            if df is not None:
-                st.session_state.original_df = df.copy()
-                st.session_state.df = df.copy()
-                st.success("File loaded! We stored your data.")
-        else:
-            demo_choice = st.selectbox("Or choose a demo dataset:", demo_names)
-            if st.button("Load demo dataset"):
-                st.session_state.original_df = demos[demo_choice].copy()
-                st.session_state.df = demos[demo_choice].copy()
-                st.success(f"Loaded demo: {demo_choice}")
-
+        if st.button("Back: Data & context"):
+            st.session_state.step = 1
     with col2:
-        st.markdown("**Quick preview**")
-        if st.session_state.df is not None:
-            st.dataframe(st.session_state.df.head(10))
+        if st.button("Next: Model & train"):
+            st.session_state.step = 3
+
+# helper: detect classification vs regression
+def detect_problem_type(series):
+    if pd.api.types.is_numeric_dtype(series):
+        if series.nunique() > 20:
+            return "regression"
         else:
-            st.info("No data yet. Upload a file or load a demo to begin.")
+            return "classification"
+    else:
+        return "classification"
 
-    st.write("\n")
-    if st.session_state.df is not None:
-        if st.button("Next: Fix missing values"):
-            goto_step(1)
-
-
-# ---------------------- Step 1: Missing values ----------------------
-
-if st.session_state.current_step == 1:
-    st.header("Step 2 — Detect & fix missing values")
-    st.write(explain_short("missing_detected"))
+# -------------------------
+# Step 4 — Model & train
+# -------------------------
+def step_model():
+    st.header("Step 4 — Model & train (Teach the computer)")
     df = st.session_state.df
     if df is None:
-        st.error("No dataset loaded. Go back to step 1 and load a dataset.")
-    else:
-        missing = df.isnull().sum()
-        total_missing = int(missing.sum())
-        st.write(f"We found **{total_missing}** empty boxes in the table.")
-        if total_missing == 0:
-            st.success("No missing values found — nice! You can skip or continue to other cleaning steps.")
-        st.table(pd.DataFrame(missing, columns=["missing_count"]).query('missing_count > 0'))
+        st.error("No data loaded.")
+        return
 
-        st.subheader("Choose what to do (click the big button)")
-        colA, colB = st.columns(2)
-        with colA:
-            if st.button("🗑️ Delete rows with missing values"):
-                st.write(explain_short("drop_rows"))
-                df2 = df.dropna()
-                st.session_state.df = df2
-                st.success("Deleted rows with missing values. Table is updated.")
-        with colB:
-            if st.button("🚮 Delete columns with missing values"):
-                st.write(explain_short("drop_cols"))
-                col_to_drop = st.multiselect("Choose columns to drop (or leave empty to drop all with any missing):", options=list(df.columns))
-                if len(col_to_drop) == 0:
-                    df2 = df.dropna(axis=1)
-                else:
-                    df2 = df.drop(columns=col_to_drop)
-                st.session_state.df = df2
-                st.success("Dropped columns. Table is updated.")
+    st.subheader("Choose the target (what we want to predict)")
+    target = st.selectbox("Target column", options=list(df.columns))
+    st.write("If the target has many different numbers → regression. If the target is categories → classification.")
+    if target:
+        problem = detect_problem_type(df[target])
+        st.write(f"Auto-detected problem type: **{problem}**")
+        st.session_state.problem = problem
+        features = [c for c in df.columns if c != target]
+        st.write("Features (inputs):", features)
 
-        st.write("---")
-        st.subheader("Fill missing values instead")
-        fill_method = st.radio("Pick a fill method:", ["Mean (numbers)", "Median (numbers)", "Mode (categorical)", "Constant value", "Keep as is"])
-        if fill_method != "Keep as is":
-            if fill_method == "Constant value":
-                const_val = st.text_input("Enter constant value (will be cast where possible):", value="0")
-            if st.button("Apply fill"):
-                st.write(explain_short("fill_mean") if fill_method == "Mean (numbers)" else explain_short("fill_median") if fill_method == "Median (numbers)" else explain_short("fill_mode"))
-                df2 = st.session_state.df.copy()
-                if fill_method == "Mean (numbers)":
-                    for col in df2.select_dtypes(include=[np.number]).columns:
-                        df2[col] = df2[col].fillna(df2[col].mean())
-                elif fill_method == "Median (numbers)":
-                    for col in df2.select_dtypes(include=[np.number]).columns:
-                        df2[col] = df2[col].fillna(df2[col].median())
-                elif fill_method == "Mode (categorical)":
-                    for col in df2.columns:
-                        if df2[col].dtype == object or df2[col].nunique() < 20:
-                            try:
-                                df2[col] = df2[col].fillna(df2[col].mode()[0])
-                            except Exception:
-                                pass
-                elif fill_method == "Constant value":
-                    for col in df2.columns:
-                        try:
-                            df2[col] = df2[col].fillna(type(df2[col].dropna().iloc[0])(const_val) if len(df2[col].dropna())>0 else const_val)
-                        except Exception:
-                            df2[col] = df2[col].fillna(const_val)
-                st.session_state.df = df2
-                st.success("Missing values filled. Table is updated.")
-
-        st.write("\n")
-        st.markdown("**Preview after cleaning**")
-        st.dataframe(st.session_state.df.head(8))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back: Choose data"):
-                goto_step(0)
-        with col2:
-            if st.button("Next: Types & Encoding"):
-                goto_step(2)
-
-
-# ---------------------- Step 2: Types & Encoding ----------------------
-
-if st.session_state.current_step == 2:
-    st.header("Step 3 — Data types & encoding")
-    st.write("Machines like numbers. If you have words, you can convert them. Here are two easy choices:")
-    st.write("1) One-hot encoding — makes a column for each word. 2) Label encoding — gives each word a number.")
-
-    df = st.session_state.df
-    if df is None:
-        st.error("No dataset loaded. Go back to step 1 and load a dataset.")
-    else:
-        cat_cols = list(df.select_dtypes(include=[object, 'category']).columns)
-        st.write(f"Detected categorical columns: {cat_cols}")
-        if cat_cols:
-            enc_choice = st.radio("Choose encoding:", ["One-hot (safe)", "Label encode (simple)", "Leave as is"])
-            if enc_choice == "One-hot (safe)":
-                if st.button("Apply one-hot encoding"):
-                    st.write(explain_short("onehot"))
-                    df2 = pd.get_dummies(df, columns=cat_cols, drop_first=False)
-                    st.session_state.df = df2
-                    st.success("One-hot encoding applied.")
-            elif enc_choice == "Label encode (simple)":
-                if st.button("Apply label encoding"):
-                    st.write(explain_short("label_encode"))
-                    df2 = df.copy()
-                    for c in cat_cols:
-                        try:
-                            le = LabelEncoder()
-                            df2[c] = le.fit_transform(df2[c].astype(str))
-                        except Exception:
-                            pass
-                    st.session_state.df = df2
-                    st.success("Label encoding applied.")
-            else:
-                st.info("No encoding applied.")
+        if problem == "classification":
+            model_choice = st.selectbox("Model", ["Random Forest (recommended)", "Logistic Regression"])
         else:
-            st.success("No categorical columns detected.")
+            model_choice = st.selectbox("Model", ["Random Forest Regressor (recommended)", "Linear Regression"])
 
-        st.markdown("**Preview**")
-        st.dataframe(st.session_state.df.head(8))
+        test_size = st.slider("Test set size (%)", 10, 40, 20)
+        scale = st.checkbox("Scale numeric features (recommended)", value=True)
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back: Missing values"):
-                goto_step(1)
-        with col2:
-            if st.button("Next: Explore data"):
-                goto_step(3)
+        if st.button("Train model"):
+            X = df[features].copy()
+            y = df[target].copy()
 
+            # Encode remaining text columns
+            for c in X.select_dtypes(include=['object', 'category']):
+                X[c] = LabelEncoder().fit_transform(X[c].astype(str))
 
-# ---------------------- Step 3: EDA ----------------------
+            # drop rows with missing target
+            mask = y.notnull()
+            X = X.loc[mask]
+            y = y.loc[mask]
 
-if st.session_state.current_step == 3:
-    st.header("Step 4 — Explore your data (pictures)")
-    st.write(explain_short("eda"))
-    df = st.session_state.df
-    if df is None:
-        st.error("No dataset loaded. Go back to step 1 and load a dataset.")
-    else:
-        st.subheader("Table & summary")
-        st.write(df.describe(include='all'))
-        st.dataframe(df.head(15))
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=test_size/100.0, random_state=42)
 
-        st.subheader("Histograms (pick a numeric column)")
-        numeric_cols = list(df.select_dtypes(include=[np.number]).columns)
-        col = st.selectbox("Numeric column for histogram:", options=numeric_cols)
-        if col:
-            fig, ax = plt.subplots()
-            sns.histplot(df[col].dropna(), kde=True)
-            ax.set_title(f"Histogram of {col}")
-            st.pyplot(fig)
+            if scale:
+                scaler = StandardScaler()
+                X_train = scaler.fit_transform(X_train)
+                X_test = scaler.transform(X_test)
 
-        st.subheader("Correlation heatmap (numeric only)")
-        if len(numeric_cols) >= 2:
-            fig2, ax2 = plt.subplots(figsize=(6, 5))
-            sns.heatmap(df[numeric_cols].corr(), annot=True, fmt='.2f', ax=ax2)
-            st.pyplot(fig2)
-        else:
-            st.info("Not enough numeric columns for correlation map.")
-
-        st.subheader("Scatter / boxplot (quick) — pick two columns")
-        colx = st.selectbox("X (numeric)", options=numeric_cols, key="xcol")
-        coly = st.selectbox("Y (numeric)", options=numeric_cols, key="ycol")
-        if colx and coly:
-            fig3, ax3 = plt.subplots()
-            sns.scatterplot(x=df[colx], y=df[coly], ax=ax3)
-            ax3.set_title(f"Scatter: {colx} vs {coly}")
-            st.pyplot(fig3)
-
-        st.write("\n")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back: Types & Encoding"):
-                goto_step(2)
-        with col2:
-            if st.button("Next: Choose target & model"):
-                goto_step(4)
-
-
-# ---------------------- Step 4: Target & Model ----------------------
-
-if st.session_state.current_step == 4:
-    st.header("Step 5 — Pick your question (target) and a model")
-    df = st.session_state.df
-    if df is None:
-        st.error("No dataset loaded. Go back to step 1 and load a dataset.")
-    else:
-        st.write(explain_short("target"))
-        cols = list(df.columns)
-        target = st.selectbox("Choose the target column (what you want to predict):", options=cols)
-        if target:
-            # Simple auto-detect problem type
-            unique_vals = df[target].nunique(dropna=True)
-            dtype = df[target].dtype
-            if np.issubdtype(dtype, np.number) and unique_vals > 20:
-                problem = "regression"
-            else:
-                problem = "classification"
-            st.session_state.problem_type = problem
-            st.info(f"Auto-detected problem type: {problem}")
-
-            st.subheader("Choose model (or keep recommended)")
-            if problem == "classification":
-                models = {
-                    "Logistic Regression": LogisticRegression(max_iter=200),
-                    "Random Forest": RandomForestClassifier(n_estimators=100),
-                    "K-Nearest Neighbors": KNeighborsClassifier(),
-                }
-            else:
-                models = {
-                    "Linear Regression": LinearRegression(),
-                    "Random Forest Regressor": RandomForestRegressor(n_estimators=100),
-                }
-
-            model_choice = st.selectbox("Model:", options=list(models.keys()), index=0)
-            test_size = st.slider("Test set size (percent):", min_value=10, max_value=50, value=20)
-            scale_choice = st.checkbox("Standard scale numeric features?", value=True)
-
-            if st.button("Train (one-click)"):
-                st.write(explain_short("train"))
-                X = df.drop(columns=[target]).copy()
-                y = df[target].copy()
-                # Drop rows where target is null
-                mask = y.notnull()
-                X = X.loc[mask]
-                y = y.loc[mask]
-
-                # Simple handling: drop non-numeric columns for now or encode them
-                X_processed = X.copy()
-                for c in X_processed.select_dtypes(include=[object, 'category']).columns:
-                    X_processed[c] = LabelEncoder().fit_transform(X_processed[c].astype(str))
-
-                # Train-test split
-                X_train, X_test, y_train, y_test = train_test_split(X_processed, y, test_size=test_size/100.0, random_state=42)
-
-                # Scaling
-                if scale_choice:
-                    scaler = StandardScaler()
-                    X_train = scaler.fit_transform(X_train)
-                    X_test = scaler.transform(X_test)
-                
-                model = models[model_choice]
-                # Fit
-                model.fit(X_train, y_train)
-
-                # Predict
-                y_pred = model.predict(X_test)
-
-                metrics = {}
+            if "Random Forest" in model_choice:
                 if problem == "classification":
-                    try:
-                        metrics['accuracy'] = accuracy_score(y_test, y_pred)
-                        metrics['precision'] = precision_score(y_test, y_pred, average='macro', zero_division=0)
-                        metrics['recall'] = recall_score(y_test, y_pred, average='macro', zero_division=0)
-                        metrics['f1'] = f1_score(y_test, y_pred, average='macro', zero_division=0)
-                    except Exception:
-                        # fallback for binary or tricky labels
-                        metrics['accuracy'] = accuracy_score(y_test, y_pred)
+                    model = RandomForestClassifier(n_estimators=100, random_state=42)
                 else:
-                    metrics['RMSE'] = mean_squared_error(y_test, y_pred, squared=False)
-                    metrics['MAE'] = mean_absolute_error(y_test, y_pred)
-                    metrics['R2'] = r2_score(y_test, y_pred)
+                    model = RandomForestRegressor(n_estimators=100, random_state=42)
+            elif "Logistic" in model_choice:
+                model = LogisticRegression(max_iter=400)
+            else:
+                model = LinearRegression()
 
-                st.session_state.model = model
-                st.session_state.trained = True
-                st.session_state.metrics = metrics
-                st.session_state.X_train = X_train
-                st.session_state.X_test = X_test
-                st.session_state.y_train = y_train
-                st.session_state.y_test = y_test
-                st.session_state.selected_target = target
-                st.session_state.feature_names = list(X_processed.columns)
-                st.success("Training finished — check results in the next step!")
+            model.fit(X_train, y_train)
+            st.session_state.model = model
+            st.session_state.trained = True
+            st.session_state.X_test = X_test
+            st.session_state.y_test = y_test
+            st.session_state.feature_names = features
+            st.success("Model trained ✅")
 
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Back: Explore data"):
-                goto_step(3)
-        with col2:
-            if st.button("Next: Train & Evaluate"):
-                goto_step(5)
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("Back: Clean & prepare"):
+            st.session_state.step = 2
+    with col2:
+        if st.button("Next: Evaluate & explain"):
+            st.session_state.step = 4
 
-
-# ---------------------- Step 5: Train & Evaluate ----------------------
-
-if st.session_state.current_step == 5:
-    st.header("Step 6 — Results & evaluation")
+# -------------------------
+# Step 5 — Evaluate & explain
+# -------------------------
+def step_evaluate():
+    st.header("Step 5 — Evaluate & explain (How good is the model?)")
     if not st.session_state.trained:
-        st.warning("You haven't trained a model yet. Go back to the previous step and click Train.")
+        st.warning("No trained model found. Train a model in the previous step.")
+        return
+
+    model = st.session_state.model
+    X_test = st.session_state.X_test
+    y_test = st.session_state.y_test
+    problem = st.session_state.problem
+
+    st.subheader("Metrics")
+    y_pred = model.predict(X_test)
+
+    if problem == "classification":
+        st.write(f"Accuracy: {accuracy_score(y_test, y_pred):.3f}")
+        st.write(f"Precision: {precision_score(y_test, y_pred, average='macro', zero_division=0):.3f}")
+        st.write(f"Recall: {recall_score(y_test, y_pred, average='macro', zero_division=0):.3f}")
+        st.write(f"F1: {f1_score(y_test, y_pred, average='macro', zero_division=0):.3f}")
+        st.subheader("Confusion matrix")
+        cm = confusion_matrix(y_test, y_pred)
+        fig, ax = plt.subplots()
+        sns.heatmap(cm, annot=True, fmt='d', ax=ax)
+        st.pyplot(fig)
     else:
-        st.success("We trained a model for you!")
-        st.write("**Metrics:**")
-        for k, v in st.session_state.metrics.items():
-            st.write(f"- **{k}**: {round(v, 3)}")
+        rmse = mean_squared_error(y_test, y_pred, squared=False)
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        st.write(f"RMSE: {rmse:.3f}")
+        st.write(f"MAE: {mae:.3f}")
+        st.write(f"R²: {r2:.3f}")
+        st.subheader("Predictions (first 20 rows)")
+        st.dataframe(pd.DataFrame({'true': y_test.reset_index(drop=True), 'pred': np.round(y_pred, 3)}).head(20))
 
-        if st.session_state.problem_type == "classification":
-            st.subheader("Confusion matrix")
-            y_test = st.session_state.y_test
-            y_pred = st.session_state.model.predict(st.session_state.X_test)
-            cm = confusion_matrix(y_test, y_pred)
-            fig, ax = plt.subplots()
-            sns.heatmap(cm, annot=True, fmt='d', ax=ax)
-            ax.set_xlabel('Predicted')
-            ax.set_ylabel('True')
-            st.pyplot(fig)
+    st.markdown("---")
+    if st.button("Back: Model & train"):
+        st.session_state.step = 3
+    if st.button("Next: Save & deploy"):
+        st.session_state.step = 5
 
-            # Feature importance if available
-            if hasattr(st.session_state.model, 'feature_importances_'):
-                st.subheader("Feature importance")
-                importances = st.session_state.model.feature_importances_
-                fi = pd.Series(importances, index=st.session_state.feature_names).sort_values(ascending=False)
-                st.bar_chart(fi.head(10))
-        else:
-            st.subheader("Predictions vs True (first 30)")
-            y_test = st.session_state.y_test
-            y_pred = st.session_state.model.predict(st.session_state.X_test)
-            df_results = pd.DataFrame({"true": y_test, "pred": y_pred}).reset_index(drop=True)
-            st.dataframe(df_results.head(30))
-
-        st.write("\n")
-        col1, col2 = st.columns([1,2])
-        with col1:
-            if st.button("Back: Choose model"):
-                goto_step(4)
-        with col2:
-            if st.button("Next: Save & Download"):
-                goto_step(6)
-
-
-# ---------------------- Step 6: Save & Download ----------------------
-
-if st.session_state.current_step == 6:
-    st.header("Step 7 — Save your model")
+# -------------------------
+# Step 6 — Save & deploy
+# -------------------------
+def step_save():
+    st.header("Step 6 — Save & deploy (Download model & use it)")
     if not st.session_state.trained:
-        st.error("No trained model available. Train before saving.")
-    else:
-        st.write("You can download the trained model (.joblib) and the names of the features. You can later load it in Python with joblib.load().")
-        buffer = io.BytesIO()
-        joblib.dump(st.session_state.model, buffer)
-        buffer.seek(0)
-        st.download_button("Download model (.joblib)", data=buffer, file_name="model.joblib")
+        st.warning("No trained model to save.")
+        return
 
-        # Also let user download a small metadata JSON / CSV with feature names and target
-        meta = {
-            "target": st.session_state.selected_target,
-            "problem_type": st.session_state.problem_type,
-            "features": st.session_state.feature_names,
-            "metrics": st.session_state.metrics,
-        }
-        st.json(meta)
+    buf = io.BytesIO()
+    joblib.dump(st.session_state.model, buf)
+    buf.seek(0)
+    st.download_button("Download model (.joblib)", data=buf, file_name="model.joblib")
 
-        if st.button("Start again with original data"):
-            st.session_state.df = st.session_state.original_df.copy()
-            st.session_state.trained = False
-            st.session_state.model = None
-            st.session_state.metrics = {}
-            st.success("Reset to original dataset.")
+    st.markdown("**Quick usage snippet**")
+    st.code("""
+import joblib
+model = joblib.load('model.joblib')
+preds = model.predict(X_new)
+    """)
 
-        if st.button("Back: Results"):
-            goto_step(5)
+    if st.button("Start a new project (reset data)"):
+        st.session_state.df = st.session_state.df_original.copy() if st.session_state.df_original is not None else None
+        st.session_state.model = None
+        st.session_state.trained = False
+        st.session_state.step = 0
 
-
-# ---------------------- Footer / Tips ----------------------
-
-st.write("---")
-st.caption("Tip: This app is a friendly, opinionated starter. For production use you should add proper preprocessing, cross-validation, hyperparameter tuning, error handling, and domain validation.")
-
-
-# End of file
+# --- Router ---
+if st.session_state.step == 0:
+    step_business()
+elif st.session_state.step == 1:
+    step_data()
+elif st.session_state.step == 2:
+    step_clean()
+elif st.session_state.step == 3:
+    step_model()
+elif st.session_state.step == 4:
+    step_evaluate()
+elif st.session_state.step == 5:
+    step_save()
